@@ -53,12 +53,9 @@ class WakeWordDetector:
             except ImportError:
                 self.logger.warning("Не удалось импортировать download_models. Убедитесь, что модели скачаны вручную.")
 
-        import inspect
-        model_params = inspect.signature(Model.__init__).parameters
-
-        if "wakeword_models" in model_params:
+        try:
             self.oww_model = Model(wakeword_models=self.wakeword_models, inference_framework="onnx")
-        else:
+        except TypeError:
             self.oww_model = Model(wakeword_model_paths=self.wakeword_models)
         self.logger.info("Модели успешно загружены. Детектор готов к работе.")
 
