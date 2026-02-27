@@ -44,10 +44,18 @@ class WakeWordDetector:
         self._stop_event = threading.Event()
 
         if sys.platform == 'win32':
-            self.logger.info("Инициализация моделей openWakeWord (может потребоваться загрузка)...")
-            download_models()
+            try:
+                from openwakeword.utils import download_models
+                self.logger.info("Проверка наличия базовых моделей (может потребоваться загрузка)...")
+                download_models()
+            except ImportError:
+                self.logger.warning("Не удалось импортировать download_models. Убедитесь, что модели скачаны вручную.")
 
-        self.oww_model = Model(wakeword_models=self.wakeword_models, inference_framework="onnx")
+        try:
+            self.oww_model = Model(wakeword_models=self.wakeword_models, inference_framework="onnx")
+        except TypeError:
+            self.logger.info("Используется альтернативная инициализация модели (для openWakeWord 0.4.0)...")
+            self.oww_model = Model(self.wakeword_models, inference_framework="onnx")
         self.logger.info("Модели успешно загружены. Детектор готов к работе.")
 
     def pause(self) -> None:
