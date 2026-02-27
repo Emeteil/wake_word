@@ -5,6 +5,7 @@ from typing import Callable, List, Optional, Union
 
 import numpy as np
 import sounddevice as sd
+from scipy.signal import resample
 from openwakeword.model import Model
 
 import sys
@@ -42,6 +43,7 @@ class WakeWordDetector:
         self._last_detection_time = 0.0
         self._stream_start_time = 0.0
         self._stop_event = threading.Event()
+        self._actual_sample_rate = self.SAMPLE_RATE
 
         if sys.platform == 'win32':
             try:
@@ -93,8 +95,12 @@ class WakeWordDetector:
         if current_time - self._last_detection_time < self.cooldown_sec:
             return
 
-        audio_data = indata.flatten()
-        
+        audio_data = indata.flatten().astype(np.int16)
+
+        if self._actual_sample_rate != self.SAMPLE_RATE:
+            num_samples = int(len(audio_data) * self.SAMPLE_RATE / self._actual_sample_rate)
+            audio_data = resample(audio_data, num_samples).astype(np.int16)
+
         prediction = self.oww_model.predict(audio_data)
         
         best_wakeword = max(prediction, key=prediction.get)
@@ -109,16 +115,36 @@ class WakeWordDetector:
             if self.callback:
                 threading.Thread(target=self.callback, args=(best_wakeword,), daemon=True).start()
 
+    def _detect_sample_rate(self) -> int:
+        for rate in [self.SAMPLE_RATE, 44100, 48000]:
+            try:
+                sd.check_input_settings(device=self.input_device, samplerate=rate, channels=1, dtype='int16')
+                return int(rate)
+            except Exception:
+                continue
+        try:
+            info = sd.query_devices(self.input_device, 'input')
+            return int(info['default_samplerate'])
+        except Exception:
+            return self.SAMPLE_RATE
+
     def start(self) -> None:
         self._stop_event.clear()
         try:
+            self._actual_sample_rate = self._detect_sample_rate()
+            actual_blocksize = int(self.CHUNK_SIZE * self._actual_sample_rate / self.SAMPLE_RATE)
+
+            if self._actual_sample_rate != self.SAMPLE_RATE:
+                self.logger.info(f"Устройство не поддерживает {self.SAMPLE_RATE} Hz. "
+                                 f"Используется {self._actual_sample_rate} Hz с ресемплированием.")
+
             self.logger.info("Запуск захвата аудио...")
             with sd.InputStream(
                 device=self.input_device, 
-                samplerate=self.SAMPLE_RATE, 
+                samplerate=self._actual_sample_rate, 
                 channels=1, 
                 dtype='int16', 
-                blocksize=self.CHUNK_SIZE, 
+                blocksize=actual_blocksize, 
                 callback=self._process_audio
             ):
                 self._stream_start_time = time.time()
