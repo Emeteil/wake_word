@@ -6,7 +6,11 @@ from typing import Callable, List, Optional, Union
 import numpy as np
 import sounddevice as sd
 from openwakeword.model import Model
-# from openwakeword.utils import download_models
+
+import sys
+
+if sys.platform == 'win32':
+    from openwakeword.utils import download_models
 
 class WakeWordDetector:
     SAMPLE_RATE = 16000
@@ -39,8 +43,9 @@ class WakeWordDetector:
         self._stream_start_time = 0.0
         self._stop_event = threading.Event()
 
-        # self.logger.info("Инициализация моделей openWakeWord (может потребоваться загрузка)...")
-        # download_models()
+        if sys.platform == 'win32':
+            self.logger.info("Инициализация моделей openWakeWord (может потребоваться загрузка)...")
+            download_models()
 
         self.oww_model = Model(wakeword_models=self.wakeword_models, inference_framework="onnx")
         self.logger.info("Модели успешно загружены. Детектор готов к работе.")
