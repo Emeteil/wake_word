@@ -1,6 +1,7 @@
 import logging
 import threading
 import time
+import queue
 from typing import Callable, List, Optional, Union
 
 import numpy as np
@@ -44,6 +45,7 @@ class WakeWordDetector:
         self._stream_start_time = 0.0
         self._stop_event = threading.Event()
         self._actual_sample_rate = self.SAMPLE_RATE
+        self._audio_queue: queue.Queue = queue.Queue(maxsize=50)
 
         if sys.platform == 'win32':
             try:
@@ -54,8 +56,10 @@ class WakeWordDetector:
                 self.logger.warning("Не удалось импортировать download_models. Убедитесь, что модели скачаны вручную.")
 
         try:
+            # openwakeword >= 0.5.0
             self.oww_model = Model(wakeword_models=self.wakeword_models, inference_framework="onnx")
         except TypeError:
+            # openwakeword 0.4.x
             self.oww_model = Model(wakeword_model_paths=self.wakeword_models)
         self.logger.info("Модели успешно загружены. Детектор готов к работе.")
 
@@ -66,51 +70,64 @@ class WakeWordDetector:
     def unpause(self) -> None:
         self._is_paused = False
         self.oww_model.reset()
+        while not self._audio_queue.empty():
+            try:
+                self._audio_queue.get_nowait()
+            except queue.Empty:
+                break
         self.logger.debug("Распознавание возобновлено.")
 
     def stop(self) -> None:
         self._stop_event.set()
 
-    def _process_audio(
+    def _audio_callback(
         self, 
         indata: np.ndarray, 
         frames: int, 
         time_info: dict, 
         status: sd.CallbackFlags
     ) -> None:
-        if status:
-            self.logger.warning(f"Статус аудиопотока: {status}")
-            
         if self._is_paused:
             return
+        try:
+            self._audio_queue.put_nowait(indata.copy())
+        except queue.Full:
+            pass
 
-        current_time = time.time()
-        
-        if self._stream_start_time > 0 and (current_time - self._stream_start_time) < self.init_delay_sec:
-            return
+    def _prediction_worker(self) -> None:
+        while not self._stop_event.is_set():
+            try:
+                indata = self._audio_queue.get(timeout=0.5)
+            except queue.Empty:
+                continue
 
-        if current_time - self._last_detection_time < self.cooldown_sec:
-            return
+            current_time = time.time()
 
-        audio_data = indata.flatten().astype(np.int16)
+            if self._stream_start_time > 0 and (current_time - self._stream_start_time) < self.init_delay_sec:
+                continue
 
-        if self._actual_sample_rate != self.SAMPLE_RATE:
-            num_samples = int(len(audio_data) * self.SAMPLE_RATE / self._actual_sample_rate)
-            audio_data = resample(audio_data, num_samples).astype(np.int16)
+            if current_time - self._last_detection_time < self.cooldown_sec:
+                continue
 
-        prediction = self.oww_model.predict(audio_data)
-        
-        best_wakeword = max(prediction, key=prediction.get)
-        prob = prediction[best_wakeword]
-        
-        self.logger.debug(f"Текущая вероятность ('{best_wakeword}'): {prob * 100:.2f}%")
-        
-        if prob > self.threshold:
-            self._last_detection_time = current_time
-            self.oww_model.reset()
-            
-            if self.callback:
-                threading.Thread(target=self.callback, args=(best_wakeword,), daemon=True).start()
+            audio_data = indata.flatten().astype(np.int16)
+
+            if self._actual_sample_rate != self.SAMPLE_RATE:
+                num_samples = int(len(audio_data) * self.SAMPLE_RATE / self._actual_sample_rate)
+                audio_data = resample(audio_data, num_samples).astype(np.int16)
+
+            prediction = self.oww_model.predict(audio_data)
+
+            best_wakeword = max(prediction, key=prediction.get)
+            prob = prediction[best_wakeword]
+
+            self.logger.debug(f"Текущая вероятность ('{best_wakeword}'): {prob * 100:.2f}%")
+
+            if prob > self.threshold:
+                self._last_detection_time = current_time
+                self.oww_model.reset()
+
+                if self.callback:
+                    threading.Thread(target=self.callback, args=(best_wakeword,), daemon=True).start()
 
     def _detect_sample_rate(self) -> int:
         for rate in [self.SAMPLE_RATE, 44100, 48000]:
@@ -135,6 +152,9 @@ class WakeWordDetector:
                 self.logger.info(f"Устройство не поддерживает {self.SAMPLE_RATE} Hz. "
                                  f"Используется {self._actual_sample_rate} Hz с ресемплированием.")
 
+            worker = threading.Thread(target=self._prediction_worker, daemon=True)
+            worker.start()
+
             self.logger.info("Запуск захвата аудио...")
             with sd.InputStream(
                 device=self.input_device, 
@@ -142,7 +162,7 @@ class WakeWordDetector:
                 channels=1, 
                 dtype='int16', 
                 blocksize=actual_blocksize, 
-                callback=self._process_audio
+                callback=self._audio_callback
             ):
                 self._stream_start_time = time.time()
                 self.logger.info("Слушаю... Нажмите Ctrl+C для выхода.")
