@@ -44,8 +44,10 @@ class WakeWordDetector:
         self._last_detection_time = 0.0
         self._stream_start_time = 0.0
         self._stop_event = threading.Event()
+        self._pause_event = threading.Event()
         self._actual_sample_rate = self.SAMPLE_RATE
         self._audio_queue: queue.Queue = queue.Queue(maxsize=50)
+        self._stream: Optional[sd.InputStream] = None
 
         if sys.platform == 'win32':
             try:
@@ -65,7 +67,8 @@ class WakeWordDetector:
 
     def pause(self) -> None:
         self._is_paused = True
-        self.logger.debug("Распознавание поставлено на паузу.")
+        self._close_stream()
+        self.logger.debug("Распознавание поставлено на паузу. Микрофон освобождён.")
 
     def unpause(self) -> None:
         self._is_paused = False
@@ -75,10 +78,33 @@ class WakeWordDetector:
                 self._audio_queue.get_nowait()
             except queue.Empty:
                 break
+        self._pause_event.set()
         self.logger.debug("Распознавание возобновлено.")
 
     def stop(self) -> None:
         self._stop_event.set()
+        self._pause_event.set()
+        self._close_stream()
+
+    def _close_stream(self) -> None:
+        if self._stream is not None:
+            try:
+                self._stream.stop()
+                self._stream.close()
+            except Exception:
+                pass
+            self._stream = None
+
+    def _open_stream(self, actual_blocksize: int) -> None:
+        self._stream = sd.InputStream(
+            device=self.input_device,
+            samplerate=self._actual_sample_rate,
+            channels=1,
+            dtype='int16',
+            blocksize=actual_blocksize,
+            callback=self._audio_callback
+        )
+        self._stream.start()
 
     def _audio_callback(
         self, 
@@ -155,22 +181,25 @@ class WakeWordDetector:
             worker = threading.Thread(target=self._prediction_worker, daemon=True)
             worker.start()
 
-            self.logger.info("Запуск захвата аудио...")
-            with sd.InputStream(
-                device=self.input_device, 
-                samplerate=self._actual_sample_rate, 
-                channels=1, 
-                dtype='int16', 
-                blocksize=actual_blocksize, 
-                callback=self._audio_callback
-            ):
-                self._stream_start_time = time.time()
-                self.logger.info("Слушаю... Нажмите Ctrl+C для выхода.")
-                self._stop_event.wait()
+            while not self._stop_event.is_set():
+                self._pause_event.clear()
+                self.logger.info("Запуск захвата аудио...")
+                try:
+                    self._open_stream(actual_blocksize)
+                    self._stream_start_time = time.time()
+                    self.logger.info("Слушаю... Нажмите Ctrl+C для выхода.")
+
+                    while not self._stop_event.is_set() and not self._is_paused:
+                        time.sleep(0.1)
+
+                    if self._is_paused and not self._stop_event.is_set():
+                        self._pause_event.wait()
+                except Exception as e:
+                    self.logger.error(f"Ошибка в аудиопотоке: {e}", exc_info=True)
+                    break
+
         except KeyboardInterrupt:
             self.logger.info("Остановлено пользователем.")
-        except Exception as e:
-            self.logger.error(f"Ошибка в аудиопотоке: {e}", exc_info=True)
         finally:
             self.stop()
             self.logger.info("Детектор остановлен.")
