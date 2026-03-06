@@ -200,6 +200,7 @@ class WakeWordDetector:
 
         except KeyboardInterrupt:
             self.logger.info("Остановлено пользователем.")
+            raise
         finally:
             self.stop()
             self.logger.info("Детектор остановлен.")
