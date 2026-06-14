@@ -14,6 +14,7 @@ import sys
 if sys.platform == 'win32':
     from openwakeword.utils import download_models
 
+
 class WakeWordDetector:
     SAMPLE_RATE = 16000
     CHUNK_SIZE = 1280
@@ -31,15 +32,15 @@ class WakeWordDetector:
         self.wakeword_models = (
             [wakeword_models] if isinstance(wakeword_models, str) else wakeword_models
         )
-            
+
         self.threshold = threshold
         self.cooldown_sec = cooldown_sec
         self.init_delay_sec = init_delay_sec
         self.callback = detection_callback
         self.input_device = input_device
-        
+
         self.logger = custom_logger if custom_logger is not None else logging.getLogger(self.__class__.__name__)
-        
+
         self._is_paused = False
         self._last_detection_time = 0.0
         self._stream_start_time = 0.0
@@ -107,10 +108,10 @@ class WakeWordDetector:
         self._stream.start()
 
     def _audio_callback(
-        self, 
-        indata: np.ndarray, 
-        frames: int, 
-        time_info: dict, 
+        self,
+        indata: np.ndarray,
+        frames: int,
+        time_info: dict,
         status: sd.CallbackFlags
     ) -> None:
         if self._is_paused:
@@ -211,22 +212,22 @@ if __name__ == "__main__":
 
     def my_action(detected_word: str) -> None:
         detector.pause()
-        
+
         print(f"\n[!] Внимание: Обнаружено слово {detected_word}. Выполняем паузу.")
         time.sleep(2)
         print("[!] Команда завершена. Возобновляем прослушивание.\n")
-        
+
         detector.unpause()
 
     detector = WakeWordDetector(
-        wakeword_models="alexa", 
-        threshold=0.55, 
-        cooldown_sec=2.0, 
+        wakeword_models="alexa",
+        threshold=0.55,
+        cooldown_sec=2.0,
         init_delay_sec=2.0,
         detection_callback=my_action,
         input_device=None
     )
-    
+
     detector.logger.setLevel(logging.DEBUG)
-    
+
     detector.start()
