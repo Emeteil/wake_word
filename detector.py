@@ -28,6 +28,7 @@ class WakeWordDetector:
         detection_callback: Optional[Callable[[str], None]] = None,
         input_device: Optional[Union[int, str]] = None,
         custom_logger: Optional[logging.Logger] = None,
+        audio_lock: Optional[threading.RLock] = None,
     ) -> None:
         self.wakeword_models = (
             [wakeword_models] if isinstance(wakeword_models, str) else wakeword_models
@@ -40,6 +41,8 @@ class WakeWordDetector:
         self.input_device = input_device
 
         self.logger = custom_logger if custom_logger is not None else logging.getLogger(self.__class__.__name__)
+
+        self._audio_lock = audio_lock if audio_lock is not None else threading.RLock()
 
         self._is_paused = False
         self._last_detection_time = 0.0
@@ -89,23 +92,25 @@ class WakeWordDetector:
 
     def _close_stream(self) -> None:
         if self._stream is not None:
-            try:
-                self._stream.stop()
-                self._stream.close()
-            except Exception:
-                pass
-            self._stream = None
+            with self._audio_lock:
+                try:
+                    self._stream.stop()
+                    self._stream.close()
+                except Exception:
+                    pass
+                self._stream = None
 
     def _open_stream(self, actual_blocksize: int) -> None:
-        self._stream = sd.InputStream(
-            device=self.input_device,
-            samplerate=self._actual_sample_rate,
-            channels=1,
-            dtype='int16',
-            blocksize=actual_blocksize,
-            callback=self._audio_callback
-        )
-        self._stream.start()
+        with self._audio_lock:
+            self._stream = sd.InputStream(
+                device=self.input_device,
+                samplerate=self._actual_sample_rate,
+                channels=1,
+                dtype='int16',
+                blocksize=actual_blocksize,
+                callback=self._audio_callback
+            )
+            self._stream.start()
 
     def _audio_callback(
         self,
